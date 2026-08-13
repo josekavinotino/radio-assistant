@@ -15,6 +15,8 @@ type QuestionCard = {
   passed: boolean;
 };
 
+const TOTAL_QUESTIONS = 10;
+
 export default function Home() {
   const {
     status,
@@ -190,16 +192,32 @@ export default function Home() {
         )}
 
         <section>
-          {cards.length === 0 ? (
-            <p className="py-10 text-center text-sm text-gray-500">
-              Pulsa INICIAR ESCUCHA para empezar a detectar preguntas.
-            </p>
-          ) : (
-            <div className="space-y-4">
-              {cards.map((card, index) => {
-                const answerResult = answerResults.find(
-                  (result) => result.questionId === card.questionId
+          <div className="space-y-4">
+            {Array.from({ length: TOTAL_QUESTIONS }, (_, index) => {
+              const card = cards[index];
+
+              if (!card) {
+                return (
+                  <div
+                    key={`empty-${index}`}
+                    className="rounded-2xl bg-gray-900 p-4"
+                  >
+                    <div className="mb-2 flex items-center justify-between">
+                      <span className="text-xs font-semibold uppercase tracking-wide text-gray-400">
+                        Pregunta {index + 1}
+                      </span>
+                    </div>
+
+                    <p className="rounded-xl bg-gray-950 px-3 py-2 text-sm text-gray-500">
+                      Esperando pregunta...
+                    </p>
+                  </div>
                 );
+              }
+
+              const answerResult = answerResults.find(
+                (result) => result.questionId === card.questionId
+              );
 
                 let answerNode;
                 if (card.editStatus === "loading") {
@@ -325,9 +343,8 @@ export default function Home() {
                     </div>
                   </div>
                 );
-              })}
-            </div>
-          )}
+            })}
+          </div>
         </section>
       </div>
     </main>
