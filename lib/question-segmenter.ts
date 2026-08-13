@@ -5,7 +5,7 @@ import type {
 } from "@/lib/deepgram-types";
 
 const PAUSE_GRACE_MS = 700;
-const SILENCE_GAP_SECONDS = 1.1;
+const SILENCE_GAP_SECONDS = 0.6;
 
 type CompletionReason = SegmentedQuestion["completedBy"];
 
@@ -145,6 +145,22 @@ export class QuestionSegmenter {
     if (this.current) {
       this.pauseAt = at;
     }
+  }
+
+  markUtteranceEnd() {
+    if (!this.current) {
+      return [];
+    }
+
+    if (!isMeaningfulQuestion(getText(this.current))) {
+      // El buffer no contiene una pregunta significativa: se descarta.
+      this.current = undefined;
+      this.pauseAt = undefined;
+      return [];
+    }
+
+    const question = this.emit("speech_final");
+    return question ? [question] : [];
   }
 
   flush(now: number, force = false) {

@@ -355,6 +355,8 @@ export function useLiveTranscription() {
 
           if (isResultsMessage(message)) {
             handleResults(message);
+          } else if (message.type === "UtteranceEnd") {
+            publishQuestions(questionSegmenterRef.current.markUtteranceEnd());
           } else if (message.type === "Error") {
             const deepgramError = getDeepgramErrorMessage(message);
             deepgramErrorRef.current = deepgramError;
