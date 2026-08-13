@@ -3,39 +3,36 @@
 import { useEffect, useRef, useState } from "react";
 import { useLiveTranscription } from "@/hooks/use-live-transcription";
 
-type RowStatus = "empty" | "active" | "passed" | "answered";
+type CardEditStatus = "idle" | "loading" | "done" | "error";
 
-type QuestionRow = {
-  questionId?: string;
-  text?: string;
-  status: RowStatus;
+type QuestionCard = {
+  questionId: string;
+  originalText: string;
+  editableText: string;
+  isEditing: boolean;
+  editStatus: CardEditStatus;
+  editedAnswer: string;
+  passed: boolean;
 };
-
-const TOTAL_QUESTIONS = 10;
-const EMPTY_ROWS: QuestionRow[] = Array.from({ length: TOTAL_QUESTIONS }, () => ({
-  status: "empty",
-}));
 
 export default function Home() {
   const {
     status,
     error,
-    interimTranscript,
-    finalTranscript,
-    speechFinal,
     segmentedQuestions,
     answerResults,
     start,
     stop,
   } = useLiveTranscription();
 
-  const [rows, setRows] = useState<QuestionRow[]>(EMPTY_ROWS);
+  const [cards, setCards] = useState<QuestionCard[]>([]);
   const assignedQuestionIdsRef = useRef<Set<string>>(new Set());
 
-  const [testQuestion, setTestQuestion] = useState("");
-  const [testResult, setTestResult] = useState<string | null>(null);
-  const [testError, setTestError] = useState<string | null>(null);
-  const [testLoading, setTestLoading] = useState(false);
+  const isListening =
+    status === "requesting-microphone" ||
+    status === "connecting" ||
+    status === "listening" ||
+    status === "stopping";
 
   useEffect(() => {
     const pending = segmentedQuestions.filter(
@@ -46,62 +43,56 @@ export default function Home() {
       return;
     }
 
-    setRows((current) => {
-      const next = [...current];
-      let assigned = false;
+    for (const question of pending) {
+      assignedQuestionIdsRef.current.add(question.id);
+    }
 
-      for (const question of pending) {
-        const index = next.findIndex((row) => row.status === "empty");
-        if (index === -1) {
-          break;
-        }
-
-        next[index] = {
-          questionId: question.id,
-          text: question.text,
-          status: "active",
-        };
-        assignedQuestionIdsRef.current.add(question.id);
-        assigned = true;
-      }
-
-      return assigned ? next : current;
-    });
+    setCards((current) => [
+      ...current,
+      ...pending.map((question) => ({
+        questionId: question.id,
+        originalText: question.text,
+        editableText: question.text,
+        isEditing: false,
+        editStatus: "idle" as const,
+        editedAnswer: "",
+        passed: false,
+      })),
+    ]);
   }, [segmentedQuestions]);
 
-  const listening = status === "listening" || status === "stopping";
-  const microphoneReady = status === "listening" || status === "stopping";
-  const connectionLabel = {
-    idle: "DESCONECTADO",
-    "requesting-microphone": "SOLICITANDO PERMISO",
-    connecting: "CONECTANDO",
-    listening: "CONECTADO",
-    stopping: "FINALIZANDO",
-    error: "ERROR",
-  }[status];
-
-  const filledCount = rows.filter((row) => row.status !== "empty").length;
-
   function toggleListening() {
-    if (listening || status === "connecting" || status === "requesting-microphone") {
+    if (isListening) {
       stop();
       return;
     }
 
+    setCards([]);
+    assignedQuestionIdsRef.current.clear();
     start();
   }
 
-  function handlePass(index: number) {
-    setRows((current) =>
-      current.map((row, rowIndex) =>
-        rowIndex === index && row.status === "active"
-          ? { ...row, status: "passed" as const }
-          : row
+  function handleEdit(questionId: string) {
+    setCards((current) =>
+      current.map((card) =>
+        card.questionId === questionId
+          ? { ...card, isEditing: true, editStatus: "idle" }
+          : card
       )
     );
   }
 
-  async function testAnswer(question: string) {
+  function handleTextChange(questionId: string, text: string) {
+    setCards((current) =>
+      current.map((card) =>
+        card.questionId === questionId
+          ? { ...card, editableText: text }
+          : card
+      )
+    );
+  }
+
+  async function requestAnswer(question: string) {
     const response = await fetch("/api/answer/test", {
       method: "POST",
       headers: {
@@ -117,273 +108,226 @@ export default function Home() {
     return (await response.json()) as { question: string; answer: string };
   }
 
-  async function handleTestAnswer() {
-    const question = testQuestion.trim();
-
-    if (!question) {
-      setTestError("Escribe una pregunta.");
-      setTestResult(null);
+  function handleConfirmEdit(questionId: string) {
+    const card = cards.find((item) => item.questionId === questionId);
+    if (!card || !card.isEditing) {
       return;
     }
 
-    setTestLoading(true);
-    setTestError(null);
-    setTestResult(null);
+    const nextText = card.editableText.trim();
+    const edited = Boolean(nextText) && nextText !== card.originalText;
 
-    try {
-      const result = await testAnswer(question);
-      setTestResult(result.answer);
-    } catch {
-      setTestError("No se ha podido obtener la respuesta.");
-    } finally {
-      setTestLoading(false);
+    setCards((current) =>
+      current.map((item) =>
+        item.questionId === questionId
+          ? {
+              ...item,
+              isEditing: false,
+              ...(edited
+                ? { editStatus: "loading" as const, editedAnswer: "" }
+                : {}),
+            }
+          : item
+      )
+    );
+
+    if (!edited) {
+      return;
     }
+
+    requestAnswer(nextText)
+      .then((result) => {
+        setCards((current) =>
+          current.map((item) =>
+            item.questionId === questionId
+              ? { ...item, editStatus: "done", editedAnswer: result.answer }
+              : item
+          )
+        );
+      })
+      .catch(() => {
+        setCards((current) =>
+          current.map((item) =>
+            item.questionId === questionId
+              ? { ...item, editStatus: "error" }
+              : item
+          )
+        );
+      });
+  }
+
+  function handlePass(questionId: string) {
+    setCards((current) =>
+      current.map((card) =>
+        card.questionId === questionId ? { ...card, passed: true } : card
+      )
+    );
   }
 
   return (
     <main className="min-h-screen bg-gray-950 text-white p-4">
-      <div className="mx-auto max-w-md">
-        <header className="mb-6">
-          <h1 className="text-2xl font-bold">Radio Assistant</h1>
-
-          <p className="text-sm text-gray-400">
-            Asistente para concurso de preguntas
-          </p>
-        </header>
-
-        <section className="mb-6 rounded-2xl bg-gray-900 p-4">
-          <div className="mb-4 flex items-center justify-between">
-            <span className="text-sm text-gray-400">
-              Estado
-            </span>
-
+      <div className="mx-auto max-w-xl">
+        <section className="mb-6 flex items-center justify-center gap-3">
+          {isListening && (
             <span
-              className={`text-sm font-medium ${
-                microphoneReady
-                  ? "text-green-400"
-                  : "text-gray-400"
-              }`}
-            >
-              {microphoneReady
-                ? "MICRÓFONO ACTIVO"
-                : status === "requesting-microphone"
-                  ? "SOLICITANDO PERMISO"
-                  : "DETENIDO"}
-            </span>
-          </div>
-
-          <div className="mb-4 flex items-center justify-between">
-            <span className="text-sm text-gray-400">Deepgram</span>
-            <span
-              className={`text-sm font-medium ${
-                status === "listening"
-                  ? "text-green-400"
-                  : status === "error"
-                    ? "text-red-400"
-                    : "text-gray-400"
-              }`}
-            >
-              {connectionLabel}
-            </span>
-          </div>
+              className="h-4 w-4 animate-pulse rounded-full bg-red-500"
+              aria-hidden="true"
+            />
+          )}
 
           <button
             onClick={toggleListening}
-            className="w-full rounded-xl bg-white px-4 py-3 font-semibold text-gray-950"
+            className="rounded-xl bg-white px-6 py-3 font-semibold text-gray-950"
           >
-            {listening || status === "connecting" || status === "requesting-microphone"
-              ? "Detener escucha"
-              : "Iniciar escucha"}
+            {isListening ? "DETENER ESCUCHA" : "INICIAR ESCUCHA"}
           </button>
-
-          {error && (
-            <p className="mt-3 text-sm text-red-400">
-              {error}
-            </p>
-          )}
         </section>
 
-        <section className="mb-6">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-lg font-semibold">
-              Preguntas
-            </h2>
+        {error && (
+          <p className="mb-4 rounded-xl bg-red-950/40 px-4 py-2 text-center text-sm text-red-400">
+            {error}
+          </p>
+        )}
 
-            <span className="text-sm text-gray-400">
-              {filledCount} / {TOTAL_QUESTIONS}
-            </span>
-          </div>
-
-          <div className="space-y-2">
-            {rows.map((row, index) => (
-              <div
-                key={index}
-                className={`flex items-center gap-3 rounded-xl p-3 ${
-                  row.status === "passed"
-                    ? "border border-amber-500/50 bg-amber-950/40"
-                    : "bg-gray-900"
-                }`}
-              >
-                <span className="w-6 text-sm text-gray-500">
-                  {index + 1}
-                </span>
-
-                <div className="flex-1">
-                  {row.text ? (
-                    <p className="text-sm text-gray-100">{row.text}</p>
-                  ) : (
-                    <p className="text-sm text-gray-500">
-                      Esperando pregunta...
-                    </p>
-                  )}
-
-                  {row.status === "passed" && (
-                    <p className="mt-0.5 text-xs font-medium text-amber-400">
-                      EN SEGUNDA VUELTA
-                    </p>
-                  )}
-
-                  {row.status === "answered" && (
-                    <p className="mt-0.5 text-xs font-medium text-green-400">
-                      RESPONDIDA
-                    </p>
-                  )}
-                </div>
-
-                <button
-                  onClick={() => handlePass(index)}
-                  disabled={row.status !== "active"}
-                  className={`rounded-lg border px-3 py-2 text-xs font-medium ${
-                    row.status === "passed"
-                      ? "border-amber-500/50 text-amber-400"
-                      : row.status === "active"
-                        ? "border-gray-700 text-gray-300 hover:border-gray-500"
-                        : "cursor-not-allowed border-gray-800 text-gray-600"
-                  }`}
-                >
-                  {row.status === "passed" ? "PASO ✓" : "PASO"}
-                </button>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        <section className="mb-6 rounded-2xl bg-gray-900 p-4">
-          <h2 className="mb-3 text-lg font-semibold">Probar respuesta</h2>
-
-          <input
-            type="text"
-            value={testQuestion}
-            onChange={(event) => setTestQuestion(event.target.value)}
-            placeholder="Escribe una pregunta..."
-            className="mb-3 w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-100 placeholder-gray-500"
-          />
-
-          <button
-            onClick={handleTestAnswer}
-            disabled={testLoading}
-            className="w-full rounded-xl bg-white px-4 py-3 font-semibold text-gray-950 disabled:opacity-50"
-          >
-            {testLoading ? "PROBANDO..." : "PROBAR RESPUESTA"}
-          </button>
-
-          {testError && (
-            <p className="mt-3 text-sm text-red-400">
-              {testError}
-            </p>
-          )}
-
-          {testResult !== null && (
-            <div className="mt-3 rounded-xl bg-gray-950 p-3">
-              <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
-                Respuesta
-              </p>
-              <p className="mt-1 text-sm text-gray-100">
-                {testResult}
-              </p>
-            </div>
-          )}
-        </section>
-
-        <section className="mb-6 rounded-2xl bg-gray-900 p-4">
-          <h2 className="mb-3 text-lg font-semibold">RESPUESTAS</h2>
-
-          {answerResults.length === 0 ? (
-            <p className="text-sm text-gray-500">
-              Esperando preguntas...
+        <section>
+          {cards.length === 0 ? (
+            <p className="py-10 text-center text-sm text-gray-500">
+              Pulsa INICIAR ESCUCHA para empezar a detectar preguntas.
             </p>
           ) : (
-            <div className="space-y-3">
-              {answerResults.map((result, index) => (
-                <div key={result.questionId} className="rounded-xl bg-gray-950 p-3">
-                  <div className="flex items-center justify-between">
-                    <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
-                      Pregunta {index + 1}
-                    </p>
+            <div className="space-y-4">
+              {cards.map((card, index) => {
+                const answerResult = answerResults.find(
+                  (result) => result.questionId === card.questionId
+                );
 
-                    {result.loading && (
-                      <span className="text-xs text-gray-400">
-                        Buscando respuesta...
-                      </span>
-                    )}
-                  </div>
-
-                  <p className="mt-1 text-sm text-gray-100">
-                    {result.question}
-                  </p>
-
-                  <p className="mt-3 text-xs font-medium uppercase tracking-wide text-gray-500">
-                    Respuesta
-                  </p>
-
-                  {result.loading ? (
-                    <p className="mt-1 text-sm text-gray-400">
+                let answerNode;
+                if (card.editStatus === "loading") {
+                  answerNode = (
+                    <p className="text-sm text-gray-400">
                       Buscando respuesta...
                     </p>
-                  ) : result.error ? (
-                    <p className="mt-1 text-sm text-red-400">
+                  );
+                } else if (card.editStatus === "error") {
+                  answerNode = (
+                    <p className="text-sm text-red-400">
                       No se ha podido obtener la respuesta.
                     </p>
-                  ) : (
-                    <p className="mt-1 text-base font-semibold text-green-400">
-                      {result.answer}
+                  );
+                } else if (card.editedAnswer) {
+                  answerNode = (
+                    <p className="text-base font-semibold text-green-400">
+                      {card.editedAnswer}
                     </p>
-                  )}
-                </div>
-              ))}
+                  );
+                } else if (answerResult?.loading) {
+                  answerNode = (
+                    <p className="text-sm text-gray-400">
+                      Buscando respuesta...
+                    </p>
+                  );
+                } else if (answerResult?.error) {
+                  answerNode = (
+                    <p className="text-sm text-red-400">
+                      {answerResult.error}
+                    </p>
+                  );
+                } else if (answerResult?.answer) {
+                  answerNode = (
+                    <p className="text-base font-semibold text-green-400">
+                      {answerResult.answer}
+                    </p>
+                  );
+                } else {
+                  answerNode = (
+                    <p className="text-sm text-gray-500">
+                      Esperando respuesta...
+                    </p>
+                  );
+                }
+
+                return (
+                  <div
+                    key={card.questionId}
+                    className={`rounded-2xl p-4 ${
+                      card.passed
+                        ? "border border-amber-500/50 bg-amber-950/40"
+                        : "bg-gray-900"
+                    }`}
+                  >
+                    <div className="mb-2 flex items-center justify-between">
+                      <span className="text-xs font-semibold uppercase tracking-wide text-gray-400">
+                        Pregunta {index + 1}
+                      </span>
+                    </div>
+
+                    {card.isEditing ? (
+                      <input
+                        type="text"
+                        autoFocus
+                        value={card.editableText}
+                        onChange={(event) =>
+                          handleTextChange(card.questionId, event.target.value)
+                        }
+                        onBlur={() => handleConfirmEdit(card.questionId)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            handleConfirmEdit(card.questionId);
+                          }
+                        }}
+                        className="w-full rounded-xl border border-gray-600 bg-gray-950 px-3 py-2 text-sm text-gray-100"
+                      />
+                    ) : (
+                      <p
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => handleEdit(card.questionId)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            handleEdit(card.questionId);
+                          }
+                        }}
+                        className="cursor-pointer rounded-xl bg-gray-950 px-3 py-2 text-sm text-gray-100"
+                      >
+                        {card.editableText}
+                      </p>
+                    )}
+
+                    <div className="mt-3">
+                      <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
+                        Respuesta
+                      </p>
+                      <div className="mt-1 min-h-6">{answerNode}</div>
+                    </div>
+
+                    <div className="mt-3 flex items-center justify-end gap-2">
+                      {card.isEditing && (
+                        <button
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => handleConfirmEdit(card.questionId)}
+                          className="rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-gray-950"
+                        >
+                          ACTUALIZAR
+                        </button>
+                      )}
+
+                      <button
+                        onClick={() => handlePass(card.questionId)}
+                        disabled={card.passed}
+                        className={`rounded-lg border px-4 py-1.5 text-xs font-semibold ${
+                          card.passed
+                            ? "cursor-not-allowed border-amber-500/50 text-amber-400"
+                            : "border-gray-600 text-gray-200 hover:border-gray-400"
+                        }`}
+                      >
+                        {card.passed ? "PASADO" : "PASO"}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
-        </section>
-
-        <section className="rounded-2xl bg-gray-900 p-4">
-          <div className="mb-2 flex items-center justify-between">
-            <h2 className="text-lg font-semibold">Transcripción en directo</h2>
-            {speechFinal && (
-              <span className="text-xs font-medium text-green-400">
-                PAUSA DETECTADA
-              </span>
-            )}
-          </div>
-
-          <div className="space-y-1.5">
-            <div>
-              <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
-                Texto final
-              </p>
-              <p className="min-h-6 text-sm text-gray-100">
-                {finalTranscript || "Esperando transcripción..."}
-              </p>
-            </div>
-
-            <div>
-              <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
-                Texto provisional
-              </p>
-              <p className="text-sm italic text-gray-400">
-                {interimTranscript || "..."}
-              </p>
-            </div>
-          </div>
         </section>
       </div>
     </main>
