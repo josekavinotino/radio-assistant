@@ -1,7 +1,12 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useLiveTranscription } from "@/hooks/use-live-transcription";
+import {
+  clearDeepgramDiagnostic,
+  getDeepgramDiagnostic,
+  useLiveTranscription,
+} from "@/hooks/use-live-transcription";
+import type { DeepgramDiagnosticEvent } from "@/hooks/use-live-transcription";
 
 type CardEditStatus = "idle" | "loading" | "done" | "error";
 
@@ -28,6 +33,8 @@ export default function Home() {
   } = useLiveTranscription();
 
   const [cards, setCards] = useState<QuestionCard[]>([]);
+  const [copyFeedback, setCopyFeedback] = useState("");
+  const copyFeedbackTimerRef = useRef<number | null>(null);
   const assignedQuestionIdsRef = useRef<Set<string>>(new Set());
 
   const isListening =
@@ -166,23 +173,111 @@ export default function Home() {
     );
   }
 
+  function formatDiagnostic(events: DeepgramDiagnosticEvent[]) {
+    return events
+      .map((event) => {
+        if (event.type === "Results") {
+          const lines = [
+            `[DG ${event.timestamp}] Results`,
+            `is_final=${event.is_final}`,
+            `speech_final=${event.speech_final}`,
+            `transcript=${JSON.stringify(event.transcript ?? "")}`,
+          ];
+
+          if (event.words && event.words.length > 0) {
+            lines.push("words:");
+            for (const word of event.words) {
+              const start =
+                typeof word.start === "number" ? word.start.toFixed(2) : "?";
+              const end =
+                typeof word.end === "number" ? word.end.toFixed(2) : "?";
+              lines.push(`  ${word.word} [${start}-${end}]`);
+            }
+          }
+
+          return lines.join("\n");
+        }
+
+        if (event.type === "UtteranceEnd") {
+          const lastWordEnd =
+            typeof event.last_word_end === "number"
+              ? event.last_word_end.toFixed(2)
+              : "?";
+          return `[DG ${event.timestamp}] UtteranceEnd\nlast_word_end=${lastWordEnd}`;
+        }
+
+        return "";
+      })
+      .join("\n\n");
+  }
+
+  function showCopyFeedback() {
+    setCopyFeedback("DIAGNÓSTICO COPIADO");
+    if (copyFeedbackTimerRef.current !== null) {
+      window.clearTimeout(copyFeedbackTimerRef.current);
+    }
+    copyFeedbackTimerRef.current = window.setTimeout(() => {
+      setCopyFeedback("");
+      copyFeedbackTimerRef.current = null;
+    }, 2000);
+  }
+
+  async function handleCopyDiagnostic() {
+    const events = getDeepgramDiagnostic();
+    if (events.length === 0) {
+      return;
+    }
+
+    const text = formatDiagnostic(events);
+    await navigator.clipboard.writeText(text);
+    showCopyFeedback();
+  }
+
+  function handleClearDiagnostic() {
+    clearDeepgramDiagnostic();
+  }
+
   return (
     <main className="min-h-screen bg-gray-950 text-white p-4">
       <div className="mx-auto max-w-xl">
-        <section className="mb-6 flex items-center justify-center gap-3">
-          {isListening && (
-            <span
-              className="h-4 w-4 animate-pulse rounded-full bg-red-500"
-              aria-hidden="true"
-            />
-          )}
+        <section className="mb-6 flex flex-col items-center gap-3">
+          <div className="flex items-center justify-center gap-3">
+            {isListening && (
+              <span
+                className="h-4 w-4 animate-pulse rounded-full bg-red-500"
+                aria-hidden="true"
+              />
+            )}
 
-          <button
-            onClick={toggleListening}
-            className="rounded-xl bg-white px-6 py-3 font-semibold text-gray-950"
-          >
-            {isListening ? "DETENER ESCUCHA" : "INICIAR ESCUCHA"}
-          </button>
+            <button
+              onClick={toggleListening}
+              className="rounded-xl bg-white px-6 py-3 font-semibold text-gray-950"
+            >
+              {isListening ? "DETENER ESCUCHA" : "INICIAR ESCUCHA"}
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleCopyDiagnostic}
+              className="rounded-lg border border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-300 hover:border-gray-500"
+            >
+              COPIAR DIAGNÓSTICO
+            </button>
+
+            <button
+              onClick={handleClearDiagnostic}
+              className="rounded-lg border border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-300 hover:border-gray-500"
+            >
+              LIMPIAR DIAGNÓSTICO
+            </button>
+          </div>
+
+          {copyFeedback && (
+            <span className="text-xs font-medium text-green-400">
+              {copyFeedback}
+            </span>
+          )}
         </section>
 
         {error && (

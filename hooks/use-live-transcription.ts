@@ -5,6 +5,7 @@ import type {
   DeepgramMessage,
   DeepgramResultsMessage,
   DeepgramTokenPayload,
+  DeepgramUtteranceEndMessage,
   SegmentedQuestion,
 } from "@/lib/deepgram-types";
 import { QuestionSegmenter } from "@/lib/question-segmenter";
@@ -82,6 +83,118 @@ function getDeepgramErrorMessage(message: DeepgramMessage) {
   );
 
   return `Deepgram informó un error${code ? ` (${code})` : ""}: ${reason}`;
+}
+
+const DIAGNOSTIC_STORAGE_KEY = "radio-assistant-deepgram-diagnostic";
+
+export type DeepgramDiagnosticEvent = {
+  timestamp: string;
+  type: "Results" | "UtteranceEnd";
+  is_final?: boolean;
+  speech_final?: boolean;
+  transcript?: string;
+  words?: Array<{ word: string; start?: number; end?: number }>;
+  last_word_end?: number;
+};
+
+function appendDiagnosticEvent(event: DeepgramDiagnosticEvent) {
+  try {
+    const raw = localStorage.getItem(DIAGNOSTIC_STORAGE_KEY);
+    const events = raw ? (JSON.parse(raw) as DeepgramDiagnosticEvent[]) : [];
+    events.push(event);
+    localStorage.setItem(DIAGNOSTIC_STORAGE_KEY, JSON.stringify(events));
+  } catch {
+    // Solo diagnóstico: si localStorage no está disponible o está lleno, se ignora.
+  }
+}
+
+export function getDeepgramDiagnostic(): DeepgramDiagnosticEvent[] {
+  try {
+    const raw = localStorage.getItem(DIAGNOSTIC_STORAGE_KEY);
+    if (!raw) {
+      return [];
+    }
+    const events = JSON.parse(raw) as DeepgramDiagnosticEvent[];
+    return Array.isArray(events) ? events : [];
+  } catch {
+    return [];
+  }
+}
+
+export function clearDeepgramDiagnostic() {
+  try {
+    localStorage.removeItem(DIAGNOSTIC_STORAGE_KEY);
+  } catch {
+    // Solo diagnóstico: se ignora.
+  }
+}
+
+function logDeepgramDiagnostic(message: DeepgramMessage) {
+  const time = new Date().toLocaleTimeString("es-ES", {
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    fractionalSecondDigits: 3,
+  });
+
+  if (isResultsMessage(message)) {
+    const alternative = message.channel.alternatives[0];
+    const transcript = alternative?.transcript.trim() ?? "";
+    const words = (alternative?.words ?? []).map((word) => ({
+      word: word.word,
+      start: word.start,
+      end: word.end,
+    }));
+
+    appendDiagnosticEvent({
+      timestamp: time,
+      type: "Results",
+      is_final: message.is_final,
+      speech_final: message.speech_final,
+      transcript,
+      words,
+    });
+
+    const lines = [
+      `[DG ${time}] Results`,
+      `is_final=${message.is_final}`,
+      `speech_final=${message.speech_final}`,
+      `transcript=${JSON.stringify(transcript)}`,
+    ];
+
+    if (words.length > 0) {
+      lines.push("words:");
+      for (const word of words) {
+        const start =
+          typeof word.start === "number" ? word.start.toFixed(2) : "?";
+        const end = typeof word.end === "number" ? word.end.toFixed(2) : "?";
+        lines.push(`  ${word.word} [${start}-${end}]`);
+      }
+    }
+
+    console.log(lines.join("\n"));
+    return;
+  }
+
+  if (message.type === "UtteranceEnd") {
+    const utteranceEnd = message as DeepgramUtteranceEndMessage;
+    const lastWordEnd =
+      typeof utteranceEnd.last_word_end === "number"
+        ? utteranceEnd.last_word_end.toFixed(2)
+        : "?";
+
+    appendDiagnosticEvent({
+      timestamp: time,
+      type: "UtteranceEnd",
+      last_word_end:
+        typeof utteranceEnd.last_word_end === "number"
+          ? utteranceEnd.last_word_end
+          : undefined,
+    });
+
+    console.log(`[DG ${time}] UtteranceEnd\nlast_word_end=${lastWordEnd}`);
+  }
 }
 
 export function useLiveTranscription() {
@@ -268,6 +381,7 @@ export function useLiveTranscription() {
       return;
     }
 
+    clearDeepgramDiagnostic();
     resetResources();
     const session = sessionRef.current + 1;
     sessionRef.current = session;
@@ -352,6 +466,8 @@ export function useLiveTranscription() {
       socket.addEventListener("message", (event) => {
         try {
           const message = JSON.parse(event.data as string) as DeepgramMessage;
+
+          logDeepgramDiagnostic(message);
 
           if (isResultsMessage(message)) {
             handleResults(message);
